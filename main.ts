@@ -2,6 +2,7 @@ import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const ST = 256, CA = 64, MW = 256, LIM = 1000000, OM = 65536;
+const T_OK = 0, T_UNDERFLOW = 2, T_OVERFLOW = 3, T_DIVZERO = 4, T_UNKNOWN = 5, T_MEM = 6, T_CALLFULL = 7, T_CALLEMPTY = 8, T_BADPC = 9, T_STEPLIMIT = 10, T_OUTOVERFLOW = 11;
 const IMM = new Uint8Array(256).fill(255);
 const POP = new Uint8Array(256);
 const PSH = new Uint8Array(256);
@@ -43,22 +44,22 @@ function run(prog: Uint8Array, inp: Uint8Array): { out: Uint8Array; code: number
   let sp = 0, csp = 0, olen = 0, ip = 0, pc = 0, steps = 0;
   const ret = (code: number) => ({ out: out.slice(0, olen), code });
   for (;;) {
-    if (steps === LIM) return ret(10);
-    if (pc < 0 || pc >= n) return ret(9);
+    if (steps === LIM) return ret(T_STEPLIMIT);
+    if (pc < 0 || pc >= n) return ret(T_BADPC);
     const op = prog[pc];
     const imm = IMM[op];
-    if (imm === 255) return ret(5);
-    if (pc + imm >= n) return ret(9);
+    if (imm === 255) return ret(T_UNKNOWN);
+    if (pc + imm >= n) return ret(T_BADPC);
     steps++;
     const next = pc + 1 + imm;
     const pops = POP[op];
     const pushes = PSH[op];
-    if (sp < pops) return ret(2);
-    if (sp - pops + pushes > ST) return ret(3);
+    if (sp < pops) return ret(T_UNDERFLOW);
+    if (sp - pops + pushes > ST) return ret(T_OVERFLOW);
     pc = next;
     switch (op) {
       case 0x00:
-        return ret(0);
+        return ret(T_OK);
       case 0x01: {
         let v = prog[next - 1];
         if (v >= 128) v -= 256;
@@ -103,19 +104,19 @@ function run(prog: Uint8Array, inp: Uint8Array): { out: Uint8Array; code: number
           case 0x11: r = (a - b) | 0; break;
           case 0x12: r = Math.imul(a, b); break;
           case 0x13:
-            if (b === 0) return ret(4);
+            if (b === 0) return ret(T_DIVZERO);
             r = a === -2147483648 && b === -1 ? a : (a / b) | 0;
             break;
           case 0x14:
-            if (b === 0) return ret(4);
+            if (b === 0) return ret(T_DIVZERO);
             r = b === -1 ? 0 : (a % b) | 0;
             break;
           case 0x15:
-            if (b === 0) return ret(4);
+            if (b === 0) return ret(T_DIVZERO);
             r = Math.floor((a >>> 0) / (b >>> 0)) | 0;
             break;
           case 0x16:
-            if (b === 0) return ret(4);
+            if (b === 0) return ret(T_DIVZERO);
             r = ((a >>> 0) % (b >>> 0)) | 0;
             break;
           case 0x18: r = a & b; break;
@@ -149,40 +150,40 @@ function run(prog: Uint8Array, inp: Uint8Array): { out: Uint8Array; code: number
         break;
       }
       case 0x33: {
-        if (csp === CA) return ret(7);
+        if (csp === CA) return ret(T_CALLFULL);
         C[csp++] = next;
         pc = prog[next - 2] | (prog[next - 1] << 8);
         break;
       }
       case 0x34: {
-        if (csp === 0) return ret(8);
+        if (csp === 0) return ret(T_CALLEMPTY);
         pc = C[--csp];
         break;
       }
       case 0x40: {
         const addr = D[sp - 1];
-        if (addr < 0 || addr >= MW) return ret(6);
+        if (addr < 0 || addr >= MW) return ret(T_MEM);
         D[sp - 1] = M[addr];
         break;
       }
       case 0x41: {
         const addr = D[sp - 1];
         const v = D[sp - 2];
-        if (addr < 0 || addr >= MW) return ret(6);
+        if (addr < 0 || addr >= MW) return ret(T_MEM);
         sp -= 2;
         M[addr] = v;
         break;
       }
       case 0x50: {
         const bytes = ENC.encode(String(D[sp - 1]));
-        if (olen + bytes.length > OM) return ret(11);
+        if (olen + bytes.length > OM) return ret(T_OUTOVERFLOW);
         sp--;
         out.set(bytes, olen);
         olen += bytes.length;
         break;
       }
       case 0x51: {
-        if (olen + 1 > OM) return ret(11);
+        if (olen + 1 > OM) return ret(T_OUTOVERFLOW);
         out[olen++] = D[--sp] & 255;
         break;
       }
@@ -192,7 +193,7 @@ function run(prog: Uint8Array, inp: Uint8Array): { out: Uint8Array; code: number
       case 0x53:
         return ret(D[--sp] & 255);
       default:
-        return ret(5);
+        return ret(T_UNKNOWN);
     }
   }
 }
